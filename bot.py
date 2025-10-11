@@ -68,7 +68,7 @@ async def start(message: types.Message, state: FSMContext):
 
             await state.update_data(owner_id=owner_id)
             await state.set_state(AnonymousState.waiting_message)
-            await message.answer("✏️ Отправьте сообщение, фото, видео, голосовое, кружок или стикер анонимно:")
+            await message.answer("✏️ Отправьте сообщение, фото, видео, голосовое, видеосообщение или стикер анонимно:")
             return
         else:
             await message.answer("❌ Неверная или устаревшая ссылка.")
@@ -102,9 +102,9 @@ async def handle_anonymous(message: types.Message, state: FSMContext):
         await bot.send_voice(owner_id, message.voice.file_id, caption="💌 Анонимное голосовое", reply_markup=keyboard)
     elif message.video:
         await bot.send_video(owner_id, message.video.file_id, caption="💌 Анонимное видео", reply_markup=keyboard)
-    elif message.video_note:  # ⬅ добавлено
-        await bot.send_video_note(owner_id, message.video_note.file_id)  # ⬅ добавлено
-        await bot.send_message(owner_id, "💌 Кружок от анонима", reply_markup=keyboard)  # ⬅ добавлено
+    elif message.video_note:
+        await bot.send_video_note(owner_id, message.video_note.file_id)
+        await bot.send_message(owner_id, "💌 Анонимное видеосообщение", reply_markup=keyboard)
     elif message.sticker:
         await bot.send_sticker(owner_id, message.sticker.file_id)
         await bot.send_message(owner_id, "💌 Стикер от анонима", reply_markup=keyboard)
@@ -142,9 +142,9 @@ async def handle_anonymous_reply(message: types.Message, state: FSMContext):
         await bot.send_voice(target_id, message.voice.file_id, caption="💌 Анонимный ответ", reply_markup=keyboard)
     elif message.video:
         await bot.send_video(target_id, message.video.file_id, caption="💌 Анонимный ответ", reply_markup=keyboard)
-    elif message.video_note:  # ⬅ добавлено
-        await bot.send_video_note(target_id, message.video_note.file_id)  # ⬅ добавлено
-        await bot.send_message(target_id, "💌 Кружок-анонимный ответ", reply_markup=keyboard)  # ⬅ добавлено
+    elif message.video_note:
+        await bot.send_video_note(target_id, message.video_note.file_id)
+        await bot.send_message(target_id, "💌 Анонимный ответ (видеосообщение)", reply_markup=keyboard)
     elif message.sticker:
         await bot.send_sticker(target_id, message.sticker.file_id)
         await bot.send_message(target_id, "💌 Стикер-анонимный ответ", reply_markup=keyboard)
