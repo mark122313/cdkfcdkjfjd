@@ -40,6 +40,15 @@ def save_links():
         json.dump(user_links, f)
 
 
+# === Кнопка "Ответить" ===
+def reply_keyboard(sender_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{sender_id}")]
+        ]
+    )
+
+
 # === /start ===
 @dp.message(CommandStart())
 async def start(message: types.Message, state: FSMContext):
@@ -67,22 +76,22 @@ async def start(message: types.Message, state: FSMContext):
 
             await state.update_data(owner_id=owner_id)
             await state.set_state(AnonymousState.waiting_message)
-            await message.answer("✏️ Отправьте сообщение, фото, видео, голосовое, видеосообщение или стикер анонимно:")
+            await message.answer(
+                "✏️ Теперь вы можете отправлять анонимные сообщения!\n\n"
+                "📝 Поддерживаемые типы сообщений:\n"
+                "• Текст\n• Фото\n• Видео\n• Голосовые сообщения\n"
+                "• Видеосообщения (круглые видео)\n• Стикеры\n\n"
+                "Отправьте любое сообщение:"
+            )
             return
         else:
             await message.answer("❌ Неверная или устаревшая ссылка.")
             return
 
     link = f"https://t.me/arzbuybot_bot?start={link_id}"
-    await message.answer(f"🔗 Ваша личная ссылка для анонимных сообщений:\n{link}")
-
-
-# === Кнопка "Ответить" ===
-def reply_keyboard(sender_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{sender_id}")]
-        ]
+    await message.answer(
+        f"🔗 Ваша личная ссылка для анонимных сообщений:\n{link}\n\n"
+        "Поделитесь этой ссылкой с друзьями, чтобы получать анонимные сообщения!"
     )
 
 
@@ -93,26 +102,54 @@ async def handle_anonymous(message: types.Message, state: FSMContext):
     owner_id = data["owner_id"]
     keyboard = reply_keyboard(message.from_user.id)
 
-    if message.text:
-        await bot.send_message(owner_id, f"💌 Анонимное сообщение:\n{message.text}", reply_markup=keyboard)
-    elif message.photo:
-        await bot.send_photo(owner_id, message.photo[-1].file_id, caption="💌 Анонимное фото", reply_markup=keyboard)
-    elif message.voice:
-        await bot.send_voice(owner_id, message.voice.file_id, caption="💌 Анонимное голосовое", reply_markup=keyboard)
-    elif message.video:
-        await bot.send_video(owner_id, message.video.file_id, caption="💌 Анонимное видео", reply_markup=keyboard)
-    elif message.video_note:
-        await bot.send_video_note(owner_id, message.video_note.file_id)
-        await bot.send_message(owner_id, "💌 Анонимное видеосообщение", reply_markup=keyboard)
-    elif message.sticker:
-        await bot.send_sticker(owner_id, message.sticker.file_id)
-        await bot.send_message(owner_id, "💌 Стикер от анонима", reply_markup=keyboard)
-    else:
-        await message.answer("⚠️ Этот тип сообщения пока не поддерживается.")
-        return
+    try:
+        if message.text:
+            await bot.send_message(owner_id, f"💌 Анонимное сообщение:\n{message.text}", reply_markup=keyboard)
+        
+        elif message.photo:
+            caption = message.caption or "💌 Анонимное фото"
+            await bot.send_photo(owner_id, message.photo[-1].file_id, caption=caption, reply_markup=keyboard)
+        
+        elif message.voice:
+            await bot.send_voice(owner_id, message.voice.file_id, caption="💌 Анонимное голосовое", reply_markup=keyboard)
+        
+        elif message.video:
+            caption = message.caption or "💌 Анонимное видео"
+            await bot.send_video(owner_id, message.video.file_id, caption=caption, reply_markup=keyboard)
+        
+        elif message.video_note:
+            # Отправляем видеосообщение
+            await bot.send_video_note(owner_id, message.video_note.file_id)
+            # Отправляем отдельное сообщение с информацией
+            info_text = "💌 Анонимное видеосообщение"
+            if message.caption:
+                info_text += f"\n\n📝 Подпись: {message.caption}"
+            await bot.send_message(owner_id, info_text, reply_markup=keyboard)
+        
+        elif message.sticker:
+            await bot.send_sticker(owner_id, message.sticker.file_id)
+            await bot.send_message(owner_id, "💌 Стикер от анонима", reply_markup=keyboard)
+        
+        elif message.document:
+            caption = message.caption or "💌 Анонимный документ"
+            await bot.send_document(owner_id, message.document.file_id, caption=caption, reply_markup=keyboard)
+        
+        elif message.audio:
+            caption = message.caption or "💌 Анонимное аудио"
+            await bot.send_audio(owner_id, message.audio.file_id, caption=caption, reply_markup=keyboard)
+        
+        else:
+            await message.answer("⚠️ Этот тип сообщения пока не поддерживается.")
+            return
 
-    await message.answer("✅ Сообщение отправлено анонимно!")
-    await state.clear()
+        await message.answer("✅ Сообщение отправлено анонимно!")
+    
+    except Exception as e:
+        await message.answer("❌ Произошла ошибка при отправке сообщения. Попробуйте еще раз.")
+        print(f"Error sending message: {e}")
+    
+    finally:
+        await state.clear()
 
 
 # === Обработка кнопки "Ответить" ===
@@ -122,7 +159,10 @@ async def handle_reply_button(callback: CallbackQuery, state: FSMContext):
     await state.update_data(target_id=target_id)
     await state.set_state(ReplyState.waiting_reply)
 
-    await callback.message.answer("✏️ Напишите ваш ответ анонимно:")
+    await callback.message.answer(
+        "✏️ Теперь вы можете ответить анонимно!\n\n"
+        "Отправьте любое сообщение для ответа:"
+    )
     await callback.answer()  # убираем "часики" на кнопке
 
 
@@ -133,26 +173,81 @@ async def handle_anonymous_reply(message: types.Message, state: FSMContext):
     target_id = data["target_id"]
     keyboard = reply_keyboard(message.from_user.id)
 
-    if message.text:
-        await bot.send_message(target_id, f"💌 Анонимный ответ:\n{message.text}", reply_markup=keyboard)
-    elif message.photo:
-        await bot.send_photo(target_id, message.photo[-1].file_id, caption="💌 Анонимный ответ", reply_markup=keyboard)
-    elif message.voice:
-        await bot.send_voice(target_id, message.voice.file_id, caption="💌 Анонимный ответ", reply_markup=keyboard)
-    elif message.video:
-        await bot.send_video(target_id, message.video.file_id, caption="💌 Анонимный ответ", reply_markup=keyboard)
-    elif message.video_note:
-        await bot.send_video_note(target_id, message.video_note.file_id)
-        await bot.send_message(target_id, "💌 Анонимный ответ (видеосообщение)", reply_markup=keyboard)
-    elif message.sticker:
-        await bot.send_sticker(target_id, message.sticker.file_id)
-        await bot.send_message(target_id, "💌 Стикер-анонимный ответ", reply_markup=keyboard)
-    else:
-        await message.answer("⚠️ Этот тип сообщения пока не поддерживается.")
-        return
+    try:
+        if message.text:
+            await bot.send_message(target_id, f"💌 Анонимный ответ:\n{message.text}", reply_markup=keyboard)
+        
+        elif message.photo:
+            caption = message.caption or "💌 Анонимный ответ"
+            await bot.send_photo(target_id, message.photo[-1].file_id, caption=caption, reply_markup=keyboard)
+        
+        elif message.voice:
+            await bot.send_voice(target_id, message.voice.file_id, caption="💌 Анонимный ответ", reply_markup=keyboard)
+        
+        elif message.video:
+            caption = message.caption or "💌 Анонимный ответ"
+            await bot.send_video(target_id, message.video.file_id, caption=caption, reply_markup=keyboard)
+        
+        elif message.video_note:
+            # Отправляем видеосообщение
+            await bot.send_video_note(target_id, message.video_note.file_id)
+            # Отправляем отдельное сообщение с информацией
+            info_text = "💌 Анонимный ответ (видеосообщение)"
+            if message.caption:
+                info_text += f"\n\n📝 Подпись: {message.caption}"
+            await bot.send_message(target_id, info_text, reply_markup=keyboard)
+        
+        elif message.sticker:
+            await bot.send_sticker(target_id, message.sticker.file_id)
+            await bot.send_message(target_id, "💌 Стикер-анонимный ответ", reply_markup=keyboard)
+        
+        elif message.document:
+            caption = message.caption or "💌 Анонимный ответ (документ)"
+            await bot.send_document(target_id, message.document.file_id, caption=caption, reply_markup=keyboard)
+        
+        elif message.audio:
+            caption = message.caption or "💌 Анонимный ответ (аудио)"
+            await bot.send_audio(target_id, message.audio.file_id, caption=caption, reply_markup=keyboard)
+        
+        else:
+            await message.answer("⚠️ Этот тип сообщения пока не поддерживается.")
+            return
 
-    await message.answer("✅ Ваш ответ отправлен анонимно!")
-    await state.clear()
+        await message.answer("✅ Ваш ответ отправлен анонимно!")
+    
+    except Exception as e:
+        await message.answer("❌ Произошла ошибка при отправке ответа. Попробуйте еще раз.")
+        print(f"Error sending reply: {e}")
+    
+    finally:
+        await state.clear()
+
+
+# === Обработка обычных сообщений (не в состоянии) ===
+@dp.message()
+async def handle_regular_message(message: types.Message):
+    user_id = str(message.from_user.id)
+    
+    if user_id in user_links:
+        link_id = user_links[user_id]
+        link = f"https://t.me/arzbuybot_bot?start={link_id}"
+        await message.answer(
+            f"🔗 Ваша личная ссылка для анонимных сообщений:\n{link}\n\n"
+            "Поделитесь этой ссылкой с друзьями, чтобы получать анонимные сообщения!\n\n"
+            "Чтобы отправить анонимное сообщение, перейдите по чужой ссылке."
+        )
+    else:
+        # Если по какой-то причине у пользователя нет ссылки, создаем её
+        link_id = str(uuid.uuid4().int)[:10]
+        user_links[user_id] = link_id
+        link_to_user[link_id] = int(user_id)
+        save_links()
+        
+        link = f"https://t.me/arzbuybot_bot?start={link_id}"
+        await message.answer(
+            f"🔗 Ваша личная ссылка для анонимных сообщений:\n{link}\n\n"
+            "Поделитесь этой ссылкой с друзьями, чтобы получать анонимные сообщения!"
+        )
 
 
 # === Запуск ===
