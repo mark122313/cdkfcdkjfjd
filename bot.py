@@ -16,7 +16,6 @@ dp = Dispatcher(storage=storage)
 
 LINKS_FILE = "user_links.json"
 
-
 # === Машина состояний ===
 class AnonymousState(StatesGroup):
     waiting_message = State()
