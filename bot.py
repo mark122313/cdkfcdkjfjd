@@ -8,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 
-API_TOKEN = ""
+API_TOKEN = "8249568849:AAH_ueAdQbD5WamdpJDI1FXXqdS2oaPozrk"
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -81,23 +81,14 @@ def is_flaskiy(user: types.User) -> bool:
 
 
 # === Кнопки для сообщений ===
-def reply_keyboard(sender_id: int, current_user: types.User, sender_username: str = None) -> InlineKeyboardMarkup:
-    # Создаем список кнопок
-    buttons = []
-    
-    # Базовые кнопки
-    base_buttons = [
-        InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{sender_id}"),
-        InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block:{sender_id}")
-    ]
-    
-    # Если текущий пользователь - flaskiy, добавляем секретную кнопку
-    if is_flaskiy(current_user):
-        base_buttons.insert(1, InlineKeyboardButton(text="🔐 Секретная кнопка", callback_data=f"secret:{sender_id}"))
-    
-    buttons.append(base_buttons)
-    
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def reply_keyboard(sender_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{sender_id}"),
+            InlineKeyboardButton(text="🔐 Секретная кнопка", callback_data=f"secret:{sender_id}"),
+            InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block:{sender_id}")
+        ]]
+    )
 
 
 # === /start ===
@@ -163,59 +154,42 @@ async def handle_anonymous(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    # Получаем информацию о получателе для проверки username
-    try:
-        owner_user = await bot.get_chat(owner_id)
-    except Exception:
-        owner_user = types.User(id=owner_id, is_bot=False, first_name="User")
-    
-    # Формируем текст сообщения с учетом того, является ли получатель flaskiy
-    if is_flaskiy(owner_user):
-        # Для flaskiy показываем username отправителя
-        sender_username = f"@{message.from_user.username}" if message.from_user.username else "Без username"
-        base_text = f"💌 Анонимное сообщение от {sender_username}:\n"
-    else:
-        base_text = "💌 Анонимное сообщение:\n"
-    
-    keyboard = reply_keyboard(message.from_user.id, owner_user)
+    keyboard = reply_keyboard(message.from_user.id)
 
     try:
         if message.text:
-            text = base_text + message.text
-            await bot.send_message(owner_id, text, reply_markup=keyboard)
+            await bot.send_message(owner_id, f"💌 Анонимное сообщение:\n{message.text}", reply_markup=keyboard)
         
         elif message.photo:
-            caption = base_text + (message.caption if message.caption else "")
+            caption = message.caption or "💌 Анонимное фото"
             await bot.send_photo(owner_id, message.photo[-1].file_id, caption=caption, reply_markup=keyboard)
         
         elif message.voice:
-            caption = base_text + "Голосовое сообщение"
-            await bot.send_voice(owner_id, message.voice.file_id, caption=caption, reply_markup=keyboard)
+            await bot.send_voice(owner_id, message.voice.file_id, caption="💌 Анонимное голосовое", reply_markup=keyboard)
         
         elif message.video:
-            caption = base_text + (message.caption if message.caption else "Видео")
+            caption = message.caption or "💌 Анонимное видео"
             await bot.send_video(owner_id, message.video.file_id, caption=caption, reply_markup=keyboard)
         
         elif message.video_note:
             # Отправляем видеосообщение
             await bot.send_video_note(owner_id, message.video_note.file_id)
             # Отправляем отдельное сообщение с информацией
-            info_text = base_text + "Видеосообщение"
+            info_text = "💌 Анонимное видеосообщение"
             if message.caption:
                 info_text += f"\n\n📝 Подпись: {message.caption}"
             await bot.send_message(owner_id, info_text, reply_markup=keyboard)
         
         elif message.sticker:
             await bot.send_sticker(owner_id, message.sticker.file_id)
-            info_text = base_text + "Стикер"
-            await bot.send_message(owner_id, info_text, reply_markup=keyboard)
+            await bot.send_message(owner_id, "💌 Стикер от анонима", reply_markup=keyboard)
         
         elif message.document:
-            caption = base_text + (message.caption if message.caption else "Документ")
+            caption = message.caption or "💌 Анонимный документ"
             await bot.send_document(owner_id, message.document.file_id, caption=caption, reply_markup=keyboard)
         
         elif message.audio:
-            caption = base_text + (message.caption if message.caption else "Аудио")
+            caption = message.caption or "💌 Анонимное аудио"
             await bot.send_audio(owner_id, message.audio.file_id, caption=caption, reply_markup=keyboard)
         
         else:
@@ -300,59 +274,42 @@ async def handle_anonymous_reply(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    # Получаем информацию о получателе для проверки username
-    try:
-        target_user = await bot.get_chat(target_id)
-    except Exception:
-        target_user = types.User(id=target_id, is_bot=False, first_name="User")
-    
-    # Формируем текст ответа с учетом того, является ли получатель flaskiy
-    if is_flaskiy(target_user):
-        # Для flaskiy показываем username отправителя
-        sender_username = f"@{message.from_user.username}" if message.from_user.username else "Без username"
-        base_text = f"💌 Анонимный ответ от {sender_username}:\n"
-    else:
-        base_text = "💌 Анонимный ответ:\n"
-    
-    keyboard = reply_keyboard(message.from_user.id, target_user)
+    keyboard = reply_keyboard(message.from_user.id)
 
     try:
         if message.text:
-            text = base_text + message.text
-            await bot.send_message(target_id, text, reply_markup=keyboard)
+            await bot.send_message(target_id, f"💌 Анонимный ответ:\n{message.text}", reply_markup=keyboard)
         
         elif message.photo:
-            caption = base_text + (message.caption if message.caption else "")
+            caption = message.caption or "💌 Анонимный ответ"
             await bot.send_photo(target_id, message.photo[-1].file_id, caption=caption, reply_markup=keyboard)
         
         elif message.voice:
-            caption = base_text + "Голосовое сообщение"
-            await bot.send_voice(target_id, message.voice.file_id, caption=caption, reply_markup=keyboard)
+            await bot.send_voice(target_id, message.voice.file_id, caption="💌 Анонимный ответ", reply_markup=keyboard)
         
         elif message.video:
-            caption = base_text + (message.caption if message.caption else "Видео")
+            caption = message.caption or "💌 Анонимный ответ"
             await bot.send_video(target_id, message.video.file_id, caption=caption, reply_markup=keyboard)
         
         elif message.video_note:
             # Отправляем видеосообщение
             await bot.send_video_note(target_id, message.video_note.file_id)
             # Отправляем отдельное сообщение с информацией
-            info_text = base_text + "Видеосообщение"
+            info_text = "💌 Анонимный ответ (видеосообщение)"
             if message.caption:
                 info_text += f"\n\n📝 Подпись: {message.caption}"
             await bot.send_message(target_id, info_text, reply_markup=keyboard)
         
         elif message.sticker:
             await bot.send_sticker(target_id, message.sticker.file_id)
-            info_text = base_text + "Стикер"
-            await bot.send_message(target_id, info_text, reply_markup=keyboard)
+            await bot.send_message(target_id, "💌 Стикер-анонимный ответ", reply_markup=keyboard)
         
         elif message.document:
-            caption = base_text + (message.caption if message.caption else "Документ")
+            caption = message.caption or "💌 Анонимный ответ (документ)"
             await bot.send_document(target_id, message.document.file_id, caption=caption, reply_markup=keyboard)
         
         elif message.audio:
-            caption = base_text + (message.caption if message.caption else "Аудио")
+            caption = message.caption or "💌 Анонимный ответ (аудио)"
             await bot.send_audio(target_id, message.audio.file_id, caption=caption, reply_markup=keyboard)
         
         else:
