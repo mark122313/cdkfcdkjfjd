@@ -15,6 +15,7 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 LINKS_FILE = "user_links.json"
+BLOCKED_FILE = "blocked_users.json"
 
 # === Машина состояний ===
 class AnonymousState(StatesGroup):
@@ -25,12 +26,18 @@ class ReplyState(StatesGroup):
     waiting_reply = State()
 
 
-# === Загрузка ссылок из файла ===
+# === Загрузка данных из файлов ===
 try:
     with open(LINKS_FILE, "r") as f:
         user_links = json.load(f)
 except Exception:
     user_links = {}
+
+try:
+    with open(BLOCKED_FILE, "r") as f:
+        blocked_users = json.load(f)
+except Exception:
+    blocked_users = {}
 
 link_to_user = {v: int(k) for k, v in user_links.items()}
 
@@ -40,11 +47,39 @@ def save_links():
         json.dump(user_links, f)
 
 
-# === Кнопка "Ответить" ===
-def reply_keyboard(sender_id: int) -> InlineKeyboardMarkup:
+def save_blocked():
+    with open(BLOCKED_FILE, "w") as f:
+        json.dump(blocked_users, f)
+
+
+# === Проверка блокировки ===
+def is_blocked(blocker_id: int, blocked_id: int) -> bool:
+    blocker_str = str(blocker_id)
+    blocked_str = str(blocked_id)
+    return blocker_str in blocked_users and blocked_str in blocked_users[blocker_str]
+
+
+# === Блокировка пользователя ===
+def block_user(blocker_id: int, blocked_id: int):
+    blocker_str = str(blocker_id)
+    blocked_str = str(blocked_id)
+    
+    if blocker_str not in blocked_users:
+        blocked_users[blocker_str] = []
+    
+    if blocked_str not in blocked_users[blocker_str]:
+        blocked_users[blocker_str].append(blocked_str)
+        save_blocked()
+
+
+# === Кнопки для сообщений ===
+def message_keyboard(sender_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{sender_id}")]
+            [
+                InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{sender_id}"),
+                InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block:{sender_id}")
+            ]
         ]
     )
 
@@ -74,6 +109,11 @@ async def start(message: types.Message, state: FSMContext):
                 await message.answer("⚠️ Это ваша собственная ссылка!")
                 return
 
+            # Проверяем блокировку
+            if is_blocked(owner_id, int(user_id)):
+                await message.answer("❌ Вы заблокированы этим пользователем и не можете отправлять ему сообщения.")
+                return
+
             await state.update_data(owner_id=owner_id)
             await state.set_state(AnonymousState.waiting_message)
             await message.answer(
@@ -100,7 +140,14 @@ async def start(message: types.Message, state: FSMContext):
 async def handle_anonymous(message: types.Message, state: FSMContext):
     data = await state.get_data()
     owner_id = data["owner_id"]
-    keyboard = reply_keyboard(message.from_user.id)
+    
+    # Проверяем блокировку перед отправкой
+    if is_blocked(owner_id, message.from_user.id):
+        await message.answer("❌ Вы заблокированы этим пользователем и не можете отправлять ему сообщения.")
+        await state.clear()
+        return
+    
+    keyboard = message_keyboard(message.from_user.id)
 
     try:
         if message.text:
@@ -156,6 +203,12 @@ async def handle_anonymous(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("reply:"))
 async def handle_reply_button(callback: CallbackQuery, state: FSMContext):
     target_id = int(callback.data.split(":")[1])
+    
+    # Проверяем блокировку перед ответом
+    if is_blocked(target_id, callback.from_user.id):
+        await callback.answer("❌ Вы заблокированы этим пользователем.", show_alert=True)
+        return
+    
     await state.update_data(target_id=target_id)
     await state.set_state(ReplyState.waiting_reply)
 
@@ -166,12 +219,37 @@ async def handle_reply_button(callback: CallbackQuery, state: FSMContext):
     await callback.answer()  # убираем "часики" на кнопке
 
 
+# === Обработка кнопки "Заблокировать" ===
+@dp.callback_query(F.data.startswith("block:"))
+async def handle_block_button(callback: CallbackQuery):
+    blocked_id = int(callback.data.split(":")[1])
+    blocker_id = callback.from_user.id
+    
+    # Блокируем пользователя
+    block_user(blocker_id, blocked_id)
+    
+    await callback.answer("✅ Пользователь заблокирован! Он больше не сможет вам писать.", show_alert=True)
+    
+    # Убираем кнопки из сообщения
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass  # Если не получилось изменить сообщение - не страшно
+
+
 # === Обработка анонимного ответа ===
 @dp.message(StateFilter(ReplyState.waiting_reply))
 async def handle_anonymous_reply(message: types.Message, state: FSMContext):
     data = await state.get_data()
     target_id = data["target_id"]
-    keyboard = reply_keyboard(message.from_user.id)
+    
+    # Проверяем блокировку перед отправкой ответа
+    if is_blocked(target_id, message.from_user.id):
+        await message.answer("❌ Вы заблокированы этим пользователем и не можете отправлять ему сообщения.")
+        await state.clear()
+        return
+    
+    keyboard = message_keyboard(message.from_user.id)
 
     try:
         if message.text:
@@ -259,4 +337,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
