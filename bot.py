@@ -8,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 
-API_TOKEN = "8249568849:AAH_ueAdQbD5WamdpJDI1FXXqdS2oaPozrk"
+API_TOKEN = ""
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
