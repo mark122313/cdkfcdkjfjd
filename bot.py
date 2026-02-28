@@ -1,299 +1,285 @@
-import json
-import uuid
-import asyncio
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+import logging
+import os
+from uuid import uuid4
 
-API_TOKEN = "8249568849:AAH_ueAdQbD5WamdpJDI1FXXqdS2oaPozrk"
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+import aiohttp
 
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+# ===== НАСТРОЙКИ =====
+# Используйте переменные окружения для продакшена
+BOT_TOKEN = "8433506372:AAEfR3QJip-CGMRDFW7uDqrBqh765mgmMoc"  # замените на свой или используйте os.getenv()
+API_BASE_URL = "http://bot_1761135469_5520_crypt1c.bothost.ru"  # замените при необходимости (без / в конце)
 
-LINKS_FILE = "user_links.json"
-BLOCKED_FILE = "blocked_users.json"
+# Состояния для ConversationHandler (отправка)
+AMOUNT, CONFIRM = range(2)
 
-FLASKIY_USERNAME = "flaskiy"  # доступ к секретной кнопке
+# Временное хранилище данных пользователя (в продакшене используйте БД)
+user_data = {}
 
-
-# === Машина состояний ===
-class AnonymousState(StatesGroup):
-    waiting_message = State()
-
-
-class ReplyState(StatesGroup):
-    waiting_reply = State()
-
-
-# === Загрузка данных ===
-def load_json(filename):
-    try:
-        with open(filename, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+# Настройка логирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 
-user_links = load_json(LINKS_FILE)
-blocked_users = load_json(BLOCKED_FILE)
-
-link_to_user = {v: int(k) for k, v in user_links.items()}
-
-
-def save_json(filename, data):
-    with open(filename, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-def save_links():
-    save_json(LINKS_FILE, user_links)
-
-
-def save_blocked():
-    save_json(BLOCKED_FILE, blocked_users)
+# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С API =====
+async def api_balance(user_id: int) -> float:
+    """Запрос баланса через API."""
+    async with aiohttp.ClientSession() as session:
+        # Пример: GET /balance?user_id=123456
+        params = {"user_id": user_id}
+        async with session.get(f"{API_BASE_URL}/balance", params=params) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("balance", 0.0)
+            else:
+                logger.error(f"API balance error: {resp.status}")
+                return 0.0
 
 
-# === Проверка блокировки ===
-def is_blocked(blocker_id: int, blocked_id: int) -> bool:
-    blocker_str = str(blocker_id)
-    blocked_str = str(blocked_id)
-    return blocker_str in blocked_users and blocked_str in blocked_users[blocker_str]
+async def api_address(user_id: int) -> str:
+    """Получение адреса для пополнения."""
+    async with aiohttp.ClientSession() as session:
+        params = {"user_id": user_id}
+        async with session.get(f"{API_BASE_URL}/address", params=params) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("address", "Адрес не найден")
+            else:
+                return "Ошибка получения адреса"
 
 
-def block_user(blocker_id: int, blocked_id: int):
-    blocker_str = str(blocker_id)
-    blocked_str = str(blocked_id)
-    if blocker_str not in blocked_users:
-        blocked_users[blocker_str] = []
-    if blocked_str not in blocked_users[blocker_str]:
-        blocked_users[blocker_str].append(blocked_str)
-        save_blocked()
+async def api_history(user_id: int) -> list:
+    """История транзакций."""
+    async with aiohttp.ClientSession() as session:
+        params = {"user_id": user_id}
+        async with session.get(f"{API_BASE_URL}/history", params=params) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("transactions", [])
+            else:
+                return []
 
 
-# === Проверка доступа к секретной кнопке ===
-def is_flaskiy(user: types.User) -> bool:
-    return user.username and user.username.lower() == FLASKIY_USERNAME.lower()
+async def api_send(user_id: int, to_address: str, amount: float) -> dict:
+    """Отправка средств."""
+    async with aiohttp.ClientSession() as session:
+        payload = {
+            "user_id": user_id,
+            "to": to_address,
+            "amount": amount,
+        }
+        async with session.post(f"{API_BASE_URL}/send", json=payload) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            else:
+                return {"error": f"Ошибка API: {resp.status}"}
 
 
-# === Кнопки ===
-def reply_keyboard(sender_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{sender_id}"),
-            InlineKeyboardButton(text="🔐 Секретная кнопка", callback_data=f"secret:{sender_id}"),
-            InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block:{sender_id}")
-        ]]
+# ===== ОБРАБОТЧИКИ КОМАНД =====
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Приветственное сообщение и главное меню."""
+    user_id = update.effective_user.id
+    # Приветствуем пользователя
+    await update.message.reply_text(
+        f"👋 Добро пожаловать в криптокошелёк!\n"
+        f"Ваш ID: {user_id}\n"
+        f"Выберите действие:"
     )
+    await show_main_menu(update, context)
 
 
-# === /start ===
-@dp.message(CommandStart())
-async def start(message: types.Message, state: FSMContext):
-    user_id = str(message.from_user.id)
-
-    if user_id not in user_links:
-        link_id = str(uuid.uuid4().int)[:10]
-        user_links[user_id] = link_id
-        link_to_user[link_id] = int(user_id)
-        save_links()
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает главное меню с inline-кнопками."""
+    keyboard = [
+        [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
+        [InlineKeyboardButton("💸 Отправить", callback_data="send")],
+        [InlineKeyboardButton("📥 Получить", callback_data="receive")],
+        [InlineKeyboardButton("📜 История", callback_data="history")],
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.edit_message_text("Главное меню:", reply_markup=reply_markup)
     else:
-        link_id = user_links[user_id]
+        await update.message.reply_text("Главное меню:", reply_markup=reply_markup)
 
-    parts = message.text.split()
-    start_param = parts[1] if len(parts) > 1 else None
 
-    if start_param:
-        if start_param in link_to_user:
-            owner_id = link_to_user[start_param]
-            if owner_id == int(user_id):
-                await message.answer("⚠️ Это ваша собственная ссылка!")
-                return
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка нажатий на кнопки главного меню."""
+    query = update.callback_query
+    await query.answer()
 
-            if is_blocked(owner_id, int(user_id)):
-                await message.answer("❌ Вы заблокированы этим пользователем.")
-                return
+    user_id = update.effective_user.id
+    data = query.data
 
-            await state.update_data(owner_id=owner_id)
-            await state.set_state(AnonymousState.waiting_message)
-            await message.answer(
-                "✏️ Отправьте анонимное сообщение!\n\n"
-                "Можно отправить текст, фото, видео, стикер, аудио или видеосообщение."
+    if data == "balance":
+        balance = await api_balance(user_id)
+        await query.edit_message_text(
+            f"💰 Ваш баланс: **{balance} USDT**\n\n",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
+            ])
+        )
+
+    elif data == "receive":
+        address = await api_address(user_id)
+        await query.edit_message_text(
+            f"📥 Ваш адрес для пополнения:\n`{address}`\n\n"
+            "Переведите средства на этот адрес. Баланс обновится автоматически.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
+            ])
+        )
+
+    elif data == "history":
+        transactions = await api_history(user_id)
+        if not transactions:
+            text = "📜 История пуста."
+        else:
+            text = "📜 Последние операции:\n"
+            for tx in transactions[-5:]:  # последние 5
+                text += f"• {tx['date']}: {tx['amount']} → {tx['to']}\n"
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
+            ])
+        )
+
+    elif data == "settings":
+        await query.edit_message_text(
+            "⚙️ Настройки:\nЗдесь можно сменить валюту и т.д. (в разработке).",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
+            ])
+        )
+
+    elif data == "main_menu":
+        await show_main_menu(update, context)
+
+    elif data == "send":
+        # Начинаем процесс отправки
+        await query.edit_message_text(
+            "💸 Введите адрес получателя (или нажмите /cancel для отмены):"
+        )
+        return "SEND_ADDRESS"  # переходим в состояние ввода адреса
+
+
+# ===== ОТПРАВКА СРЕДСТВ (ConversationHandler) =====
+async def send_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало отправки — запрос адреса."""
+    await update.message.reply_text("Введите адрес получателя:")
+    return AMOUNT
+
+
+async def send_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем адрес, запрашиваем сумму."""
+    address = update.message.text
+    context.user_data["recipient"] = address
+    await update.message.reply_text("Введите сумму для отправки:")
+    return CONFIRM
+
+
+async def send_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем сумму, показываем подтверждение."""
+    try:
+        amount = float(update.message.text)
+    except ValueError:
+        await update.message.reply_text("❌ Неверная сумма. Введите число:")
+        return CONFIRM
+
+    context.user_data["amount"] = amount
+    recipient = context.user_data["recipient"]
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_send")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_send")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        f"📤 Отправка **{amount} USDT** на адрес `{recipient}`\n\nПодтвердите действие:",
+        parse_mode="Markdown",
+        reply_markup=reply_markup,
+    )
+    return ConversationHandler.END
+
+
+async def send_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка подтверждения отправки."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "confirm_send":
+        user_id = update.effective_user.id
+        recipient = context.user_data.get("recipient")
+        amount = context.user_data.get("amount")
+
+        result = await api_send(user_id, recipient, amount)
+        if "error" in result:
+            await query.edit_message_text(f"❌ Ошибка: {result['error']}")
+        else:
+            await query.edit_message_text(
+                f"✅ Отправлено {amount} USDT на адрес {recipient}\n"
+                f"TxID: `{result.get('txid', 'неизвестно')}`",
+                parse_mode="Markdown",
             )
-            return
-        else:
-            await message.answer("❌ Неверная или устаревшая ссылка.")
-            return
-
-    link = f"https://t.me/arzbuybot_bot?start={link_id}"
-    await message.answer(
-        f"🔗 Ваша личная ссылка для анонимных сообщений:\n{link}\n\n"
-        "Отправьте её друзьям, чтобы получать анонимные сообщения!"
-    )
-
-
-# === Анонимное сообщение ===
-@dp.message(StateFilter(AnonymousState.waiting_message))
-async def handle_anonymous(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    owner_id = data.get("owner_id")
-
-    if not owner_id:
-        await message.answer("⚠️ Ошибка: не найден получатель.")
-        await state.clear()
-        return
-
-    if is_blocked(owner_id, message.from_user.id):
-        await message.answer("❌ Вы заблокированы этим пользователем.")
-        await state.clear()
-        return
-
-    keyboard = reply_keyboard(message.from_user.id)
-
-    try:
-        if message.text:
-            await bot.send_message(owner_id, f"💌 Анонимное сообщение:\n{message.text}", reply_markup=keyboard)
-        elif message.photo:
-            caption = message.caption or "💌 Анонимное фото"
-            await bot.send_photo(owner_id, message.photo[-1].file_id, caption=caption, reply_markup=keyboard)
-        elif message.video:
-            caption = message.caption or "💌 Анонимное видео"
-            await bot.send_video(owner_id, message.video.file_id, caption=caption, reply_markup=keyboard)
-        elif message.sticker:
-            await bot.send_sticker(owner_id, message.sticker.file_id)
-            await bot.send_message(owner_id, "💌 Стикер от анонима", reply_markup=keyboard)
-        elif message.voice:
-            await bot.send_voice(owner_id, message.voice.file_id, caption="💌 Голосовое", reply_markup=keyboard)
-        elif message.video_note:
-            await bot.send_video_note(owner_id, message.video_note.file_id)
-            await bot.send_message(owner_id, "💌 Видеосообщение от анонима", reply_markup=keyboard)
-        else:
-            await message.answer("⚠️ Этот тип сообщения не поддерживается.")
-            return
-
-        await message.answer("✅ Сообщение отправлено анонимно!")
-    except Exception as e:
-        await message.answer("❌ Ошибка при отправке.")
-        print(f"Send error: {e}")
-    finally:
-        await state.clear()
-
-
-# === Ответить ===
-@dp.callback_query(F.data.startswith("reply:"))
-async def handle_reply_button(callback: CallbackQuery, state: FSMContext):
-    target_id = int(callback.data.split(":")[1])
-    if is_blocked(target_id, callback.from_user.id):
-        await callback.answer("❌ Вы заблокированы этим пользователем.", show_alert=True)
-        return
-
-    await state.update_data(target_id=target_id)
-    await state.set_state(ReplyState.waiting_reply)
-    await callback.message.answer("✏️ Напишите ответное сообщение:")
-    await callback.answer()
-
-
-# === Заблокировать ===
-@dp.callback_query(F.data.startswith("block:"))
-async def handle_block_button(callback: CallbackQuery):
-    blocked_id = int(callback.data.split(":")[1])
-    blocker_id = callback.from_user.id
-    block_user(blocker_id, blocked_id)
-    await callback.answer("✅ Пользователь заблокирован.", show_alert=True)
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
-
-# === Секретная кнопка ===
-@dp.callback_query(F.data.startswith("secret:"))
-async def handle_secret_button(callback: CallbackQuery):
-    target_id = int(callback.data.split(":")[1])
-
-    if not is_flaskiy(callback.from_user):
-        await callback.answer("🚫 У вас нет доступа к этой функции.", show_alert=True)
-        return
-
-    await callback.answer("🔐 Секретная функция активирована!", show_alert=True)
-    await callback.message.answer(f"🎯 flaskiy активировал секретную функцию для пользователя ID {target_id}")
-
-
-# === Ответ ===
-@dp.message(StateFilter(ReplyState.waiting_reply))
-async def handle_anonymous_reply(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    target_id = data.get("target_id")
-
-    if not target_id:
-        await message.answer("⚠️ Ошибка: не найден адресат.")
-        await state.clear()
-        return
-
-    if is_blocked(target_id, message.from_user.id):
-        await message.answer("❌ Вы заблокированы этим пользователем.")
-        await state.clear()
-        return
-
-    keyboard = reply_keyboard(message.from_user.id)
-
-    try:
-        if message.text:
-            await bot.send_message(target_id, f"💌 Анонимный ответ:\n{message.text}", reply_markup=keyboard)
-        elif message.photo:
-            caption = message.caption or "💌 Анонимный ответ (фото)"
-            await bot.send_photo(target_id, message.photo[-1].file_id, caption=caption, reply_markup=keyboard)
-        elif message.video:
-            caption = message.caption or "💌 Анонимный ответ (видео)"
-            await bot.send_video(target_id, message.video.file_id, caption=caption, reply_markup=keyboard)
-        elif message.sticker:
-            await bot.send_sticker(target_id, message.sticker.file_id)
-            await bot.send_message(target_id, "💌 Стикер-анонимный ответ", reply_markup=keyboard)
-        elif message.voice:
-            await bot.send_voice(target_id, message.voice.file_id, caption="💌 Голосовой ответ", reply_markup=keyboard)
-        elif message.video_note:
-            await bot.send_video_note(target_id, message.video_note.file_id)
-            await bot.send_message(target_id, "💌 Видеосообщение-анонимный ответ", reply_markup=keyboard)
-        else:
-            await message.answer("⚠️ Этот тип сообщения не поддерживается.")
-            return
-
-        await message.answer("✅ Ответ отправлен анонимно!")
-    except Exception as e:
-        await message.answer("❌ Ошибка при отправке ответа.")
-        print(f"Reply error: {e}")
-    finally:
-        await state.clear()
-
-
-# === Если пишут без контекста ===
-@dp.message()
-async def handle_regular_message(message: types.Message):
-    user_id = str(message.from_user.id)
-    if user_id not in user_links:
-        link_id = str(uuid.uuid4().int)[:10]
-        user_links[user_id] = link_id
-        link_to_user[link_id] = int(user_id)
-        save_links()
+        # Возвращаемся в главное меню
+        await show_main_menu(update, context)
     else:
-        link_id = user_links[user_id]
+        await query.edit_message_text("❌ Отправка отменена.")
+        await show_main_menu(update, context)
 
-    link = f"https://t.me/arzbuybot_bot?start={link_id}"
-    await message.answer(
-        f"🔗 Ваша личная ссылка:\n{link}\n\n"
-        "Отправьте её друзьям, чтобы получать анонимные сообщения."
+
+async def send_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена отправки."""
+    await update.message.reply_text("❌ Отправка отменена.")
+    await show_main_menu(update, context)
+    return ConversationHandler.END
+
+
+# ===== ЗАПУСК =====
+def main() -> None:
+    """Запуск бота."""
+    # Создаём приложение
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Обработчик команд
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", start))
+
+    # ConversationHandler для отправки
+    send_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_handler, pattern="^send$")],
+        states={
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_amount)],
+            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_confirm)],
+        },
+        fallbacks=[CommandHandler("cancel", send_cancel)],
     )
+    application.add_handler(send_conv)
 
+    # Обработчик inline-кнопок (кроме тех, что уже обработаны в send_conv)
+    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(balance|receive|history|settings|main_menu)$"))
+    # Обработчик подтверждения отправки
+    application.add_handler(CallbackQueryHandler(send_confirm_callback, pattern="^(confirm_send|cancel_send)$"))
 
-# === Запуск ===
-async def main():
-    print("🚀 Бот запущен и работает...")
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    # Запускаем бота
+    print("Бот запущен...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
